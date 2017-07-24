@@ -482,7 +482,7 @@ void RocksDBStore::get_statistics(Formatter *f)
   }
 }
 
-int RocksDBStore::submit_transaction(KeyValueDB::Transaction t)
+int RocksDBStore::submit_common(rocksdb::WriteOptions& woptions, KeyValueDB::Transaction t) 
 {
   utime_t start = ceph_clock_now();
   // enable rocksdb breakdown
@@ -494,7 +494,6 @@ int RocksDBStore::submit_transaction(KeyValueDB::Transaction t)
 
   RocksDBTransactionImpl * _t =
     static_cast<RocksDBTransactionImpl *>(t.get());
-  rocksdb::WriteOptions woptions;
   woptions.disableWAL = disableWAL;
   lgeneric_subdout(cct, rocksdb, 30) << __func__;
   RocksWBHandler bat_txc;
@@ -535,58 +534,18 @@ int RocksDBStore::submit_transaction(KeyValueDB::Transaction t)
   return s.ok() ? 0 : -1;
 }
 
+int RocksDBStore::submit_transaction(KeyValueDB::Transaction t) 
+{
+  rocksdb::WriteOptions woptions;
+  woptions.sync = false;
+  return submit_common(woptions, t);
+}
+
 int RocksDBStore::submit_transaction_sync(KeyValueDB::Transaction t)
 {
-  utime_t start = ceph_clock_now();
-  // enable rocksdb breakdown
-  // considering performance overhead, default is disabled
-  if (g_conf->rocksdb_perf) {
-    rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
-    rocksdb::perf_context.Reset();
-  }
-
-  RocksDBTransactionImpl * _t =
-    static_cast<RocksDBTransactionImpl *>(t.get());
   rocksdb::WriteOptions woptions;
   woptions.sync = true;
-  woptions.disableWAL = disableWAL;
-  lgeneric_subdout(cct, rocksdb, 30) << __func__;
-  RocksWBHandler bat_txc;
-  _t->bat.Iterate(&bat_txc);
-  *_dout << " Rocksdb transaction: " << bat_txc.seen << dendl;
-
-  rocksdb::Status s = db->Write(woptions, &_t->bat);
-  if (!s.ok()) {
-    RocksWBHandler rocks_txc;
-    _t->bat.Iterate(&rocks_txc);
-    derr << __func__ << " error: " << s.ToString() << " code = " << s.code()
-         << " Rocksdb transaction: " << rocks_txc.seen << dendl;
-  }
-  utime_t lat = ceph_clock_now() - start;
-
-  if (g_conf->rocksdb_perf) {
-    utime_t write_memtable_time;
-    utime_t write_delay_time;
-    utime_t write_wal_time;
-    utime_t write_pre_and_post_process_time;
-    write_wal_time.set_from_double(
-	static_cast<double>(rocksdb::perf_context.write_wal_time)/1000000000);
-    write_memtable_time.set_from_double(
-	static_cast<double>(rocksdb::perf_context.write_memtable_time)/1000000000);
-    write_delay_time.set_from_double(
-	static_cast<double>(rocksdb::perf_context.write_delay_time)/1000000000);
-    write_pre_and_post_process_time.set_from_double(
-	static_cast<double>(rocksdb::perf_context.write_pre_and_post_process_time)/1000000000);
-    logger->tinc(l_rocksdb_write_memtable_time, write_memtable_time);
-    logger->tinc(l_rocksdb_write_delay_time, write_delay_time);
-    logger->tinc(l_rocksdb_write_wal_time, write_wal_time);
-    logger->tinc(l_rocksdb_write_pre_and_post_process_time, write_pre_and_post_process_time);
-  }
-
-  logger->inc(l_rocksdb_txns_sync);
-  logger->tinc(l_rocksdb_submit_sync_latency, lat);
-
-  return s.ok() ? 0 : -1;
+  return submit_common(woptions, t);
 }
 
 RocksDBStore::RocksDBTransactionImpl::RocksDBTransactionImpl(RocksDBStore *_db)
